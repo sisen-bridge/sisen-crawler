@@ -1,0 +1,28 @@
+steps:
+  # Step 1: Build the container image using your existing Dockerfile
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      ["build", "-t", "gcr.io/${PROJECT_ID}/sisen-crawler:${SHORT_SHA}", "."]
+
+  # Step 2: Push the image to Google Artifact Registry
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "gcr.io/${PROJECT_ID}/sisen-crawler:${SHORT_SHA}"]
+
+  # Step 3: Update the Cloud Run Job to use the new image
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      [
+        "run",
+        "jobs",
+        "update",
+        "web-scraper-job",
+        "--image",
+        "gcr.io/${PROJECT_ID}/sisen-crawler:${SHORT_SHA}",
+        "--region",
+        "us-central1",
+      ]
+
+# FIX FOR YOUR ERROR: Forces logs to Cloud Logging instead of a bucket
+options:
+  logging: CLOUD_LOGGING_ONLY
