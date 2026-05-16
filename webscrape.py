@@ -7,7 +7,7 @@ Install:
     pip install requests beautifulsoup4 lxml
 
 Quick start:
-    from kj_scraper import extract_article_urls, scrape_articles
+    from webscraper import extract_article_urls, scrape_articles
 
     korean_outlets = {
         "chosun": "https://www.chosun.com/nsearch/?query=",
@@ -22,6 +22,7 @@ Quick start:
     articles     = scrape_articles(article_urls)
 """
 
+import re
 import time
 import logging
 from urllib.parse import urljoin, urlparse, quote
@@ -29,8 +30,6 @@ from urllib.parse import urljoin, urlparse, quote
 import requests
 from bs4 import BeautifulSoup
 
-# Optional: playwright for JS-rendered pages.
-# Install with: pip install playwright && playwright install chromium
 try:
     from playwright.sync_api import sync_playwright
     _PLAYWRIGHT_AVAILABLE = True
@@ -54,20 +53,9 @@ _SESSION.headers.update({
     "Referer": "https://www.google.com/",
 })
 
-# ── Per-outlet configuration ───────────────────────────────────────────────────
-# Defines how to find article links on each outlet's search results page.
-# Add or adjust selectors here if a site updates its HTML structure.
-#
-# Keys:
-#   "link_selector" : CSS selector matching <a> tags that wrap article links.
-#   "link_attr"     : attribute on that tag holding the URL (almost always "href").
-#   "base_url"      : prepended to relative URLs (leave "" to auto-detect).
-#
 OUTLET_CONFIG: dict[str, dict] = {
     # ── Korean ────────────────────────────────────────────────────────────────
     "chosun": {
-        # Results load inside div.search-feed > div.story-card-wrapper
-        # Links point to biz.chosun.com or www.chosun.com article pages
         "link_selector": ".search-feed .story-card-wrapper a",
         "link_attr": "href",
         "base_url": "https://www.chosun.com",
@@ -81,23 +69,66 @@ OUTLET_CONFIG: dict[str, dict] = {
     },
     # ── Japanese ──────────────────────────────────────────────────────────────
     "tokyo_np": {
-        # Search results: each article link sits in a parent with class "detail-ttl"
-        "link_selector": ".detail-ttl a",
+        "link_selector": ".gs-title a",
         "link_attr": "href",
         "base_url": "https://www.tokyo-np.co.jp",
         "url_must_contain": "/article/",
         "use_playwright": True,
     },
     "mainichi": {
-        # Results load inside ul.articlelist.js-morelist > li > a
-        # hrefs are protocol-relative: //mainichi.jp/articles/...
         "link_selector": "ul.articlelist a",
         "link_attr": "href",
         "base_url": "https://mainichi.jp",
         "url_must_contain": "/articles/",
         "use_playwright": True,
     },
-    # Add more outlets here following the same pattern.
+
+    "hankookilbo": {
+        "link_selector": ".w-full > a, .gap-16 a",
+        "link_attr": "href",
+        "base_url": "https://www.hankookilbo.com",
+        "url_must_contain": "/news/article/",
+        "use_playwright": True,
+    },
+    "hani": {
+        "link_selector": ".reverse-mo a",
+        "link_attr": "href",
+        "base_url": "https://www.hani.co.kr",
+        "url_must_contain": "hani.co.kr/arti/",
+        "use_playwright": True,
+    },
+    "khan": {
+ 
+        "link_selector": ".news_list a, .search_list a, .article-list a, .c-list-title a, h3 a, h4 a",
+        "link_attr": "href",
+        "base_url": "https://www.khan.co.kr",
+        "url_must_contain": "/article/",
+        "use_playwright": True,
+    },
+
+    "akahata": {
+        "link_selector": ".title.ellipsis.media-heading a, .media-heading a",
+        "link_attr": "href",
+        "base_url": "https://www.jcp.or.jp",
+        "url_must_contain": "/akahata/aik",  # e.g. /akahata/aik07/2008-...
+    },
+    "sankei": {
+
+        "link_selector": ".headline a",
+        "link_attr": "href",
+        "base_url": "https://www.sankei.com",
+        "url_must_contain": "/article/",
+        "url_must_match_pattern": r"/article/\d{8}-",
+    },
+    "yomiuri": {
+        "search_url_template": "https://www.yomiuri.co.jp/web-search/?st=1&wo={keyword}&ac=srch&ar=1&fy=&fm=&fd=&ty=&tm=&td=",
+        "link_selector": ".c-list-title a",
+        "link_attr": "href",
+        "base_url": "https://www.yomiuri.co.jp",
+        "url_must_match_pattern": r"/\w+/\d{8}-",
+        "url_must_contain": "yomiuri.co.jp/",
+        "use_playwright": True,
+    }
 }
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -261,13 +292,26 @@ def diagnose_outlet(search_url: str, outlet_name: str = "") -> None:
     print(f"{'='*70}\n")
 
 
+def _fetch_title(url: str) -> str:
+    """Fetch a single article page and extract its title."""
+    soup = _fetch(url)
+    if soup is None:
+        return ""
+    if soup.title and soup.title.string:
+        return soup.title.string.strip()
+    h1 = soup.find("h1")
+    return h1.get_text(strip=True) if h1 else ""
+
+
 # ── Fixed keyword pairs ───────────────────────────────────────────────────────
 # Korean keys are searched in Korean outlets (Chosun, Yonhap).
 # Japanese values are searched in Japanese outlets (Tokyo NP, Mainichi).
 # Add or remove pairs here as needed.
 KEYWORDS: dict[str, str] = {
-    "APEC정상회의":     "APEC首脳会議",
-    "안동한일정상회담": "安東日韓首脳会談",
+    "관광세,관광객,숙박세,오버투어리즘": "観光税、観光客、宿泊税、オーバーツーリズム",
+    "동해 일본해 병기": "日本海呼称問題",
+    "야스쿠니 참배": "靖国神社参拝",
+    "일본산 수산물 수입규제": "日本福島産水産物輸出規制",
 }
 
 # ── Function 1 ────────────────────────────────────────────────────────────────
@@ -277,10 +321,10 @@ def extract_article_urls(
     japanese_outlets: dict[str, str],
     keywords: dict[str, str] | None = None,
     delay: float = 1.5,
-) -> list[str]:
+) -> list[dict]:
     """
-    For every (outlet, keyword) pair, fetch that outlet's search results page
-    and collect the article URLs found on it.
+    For every (outlet, keyword) pair, fetch that outlet's search results page,
+    pick the first article found, fetch its title, and return the result.
 
     Parameters
     ----------
@@ -293,12 +337,13 @@ def extract_article_urls(
 
     Returns
     -------
-    Deduplicated flat list of article URL strings across all outlets and keywords.
+    List of dicts, each with keys: "outlet", "keyword", "url", "title".
+    One entry per (outlet, keyword) pair.
     """
     if keywords is None:
         keywords = KEYWORDS
     seen: set[str] = set()
-    article_urls: list[str] = []
+    article_entries: list[dict] = []
 
     # Build two separate (outlet_name, search_base_url, keyword) work lists.
     tasks: list[tuple[str, str, str]] = []
@@ -320,7 +365,12 @@ def extract_article_urls(
             parsed = urlparse(search_base_url)
             base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        search_url = f"{search_base_url}{quote(keyword, safe='')}"
+        # Support outlets with non-standard search URL formats
+        template: str = cfg.get("search_url_template", "")
+        if template:
+            search_url = template.replace("{keyword}", quote(keyword, safe=""))
+        else:
+            search_url = f"{search_base_url}{quote(keyword, safe='')}"
         log.info("[%s] Fetching search results: %s", outlet_name, search_url)
 
         use_playwright: bool = cfg.get("use_playwright", False)
@@ -330,125 +380,67 @@ def extract_article_urls(
             continue
 
         must_contain: str = cfg.get("url_must_contain", "")
+        must_match: str   = cfg.get("url_must_match_pattern", "")
         if link_selector:
             candidates = []
             for a in soup.select(link_selector):
                 href = a.get(link_attr, "")
                 if href:
                     url = _to_absolute(href, base_url)
-                    if _is_article_url(url, must_contain):
-                        candidates.append(url)
+                    if not _is_article_url(url, must_contain):
+                        continue
+                    if must_match and not re.search(must_match, url):
+                        continue
+                    candidates.append(url)
         else:
             log.warning("[%s] Not in OUTLET_CONFIG — using generic extraction.", outlet_name)
             candidates = _generic_links(soup, base_url)
 
-        new = 0
+        # Take only the first unseen article URL, fetch its title immediately
         for url in candidates:
             if url not in seen:
                 seen.add(url)
-                article_urls.append(url)
-                new += 1
+                title = _fetch_title(url)
+                article_entries.append({
+                    "outlet":  outlet_name,
+                    "keyword": keyword,
+                    "url":     url,
+                    "title":   title,
+                })
+                log.info("[%s] keyword=%r → %s | title=%r", outlet_name, keyword, url, title[:60])
+                break   # ← only 1 article per outlet/keyword
+        else:
+            log.info("[%s] keyword=%r → no articles found", outlet_name, keyword)
 
-        log.info("[%s] keyword=%r → +%d URLs (running total: %d)",
-                 outlet_name, keyword, new, len(article_urls))
         time.sleep(delay)
 
-    log.info("Collected %d unique article URLs in total.", len(article_urls))
-    return article_urls
-
-
-# ── Function 2 ────────────────────────────────────────────────────────────────
-
-def scrape_articles(
-    article_urls: list[str],
-    delay: float = 1.0,
-) -> list[dict]:
-    """
-    Fetch each article URL and extract its title and main body text.
-
-    Parameters
-    ----------
-    article_urls : list of URLs returned by extract_article_urls().
-    delay        : polite pause between requests (seconds).
-
-    Returns
-    -------
-    List of dicts, each with:
-        "url"   : original article URL (str)
-        "title" : article title        (str, empty string if not found)
-        "body"  : main body text       (str, empty string if extraction failed)
-    """
-    results: list[dict] = []
-
-    for url in article_urls:
-        log.info("Scraping: %s", url)
-        soup = _fetch(url)
-
-        if soup is None:
-            results.append({"url": url, "title": "", "body": ""})
-            time.sleep(delay)
-            continue
-
-        # ── Title ──────────────────────────────────────────────────────────────
-        title = ""
-        if soup.title and soup.title.string:
-            title = soup.title.string.strip()
-        if not title:
-            h1 = soup.find("h1")
-            title = h1.get_text(strip=True) if h1 else ""
-
-        # ── Body ───────────────────────────────────────────────────────────────
-        for tag in soup(["script", "style", "nav", "header", "footer",
-                         "aside", "form", "noscript", "iframe", "figure"]):
-            tag.decompose()
-
-        # Try semantic containers in priority order.
-        content_el = (
-            soup.find("article")
-            or soup.find("main")
-            or soup.find(attrs={"role": "main"})
-            or soup.find("div", class_=lambda c: c and any(
-                kw in c.lower() for kw in ("article", "content", "story", "body", "text")
-            ))
-            or soup.body
-        )
-
-        body = ""
-        if content_el:
-            paragraphs = [
-                p.get_text(separator=" ", strip=True)
-                for p in content_el.find_all("p")
-                if len(p.get_text(strip=True)) > 30   # skip captions / nav snippets
-            ]
-            body = "\n\n".join(paragraphs) if paragraphs else content_el.get_text("\n", strip=True)
-
-        results.append({"url": url, "title": title, "body": body})
-        log.info("  ✓ title=%r | body=%d chars", title[:60], len(body))
-        time.sleep(delay)
-
-    log.info("Scraped %d articles.", len(results))
-    return results
+    log.info("Collected %d article entries in total.", len(article_entries))
+    return article_entries
 
 
 # ── demo ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     korean_outlets = {
-        "chosun": "https://www.chosun.com/nsearch/?query=",
-        "yonhap": "https://www.yna.co.kr/search/index?query=",
+        "chosun":       "https://www.chosun.com/nsearch/?query=",
+        "yonhap":       "https://www.yna.co.kr/search/index?query=",
+        "hankookilbo":  "https://www.hankookilbo.com/search?searchText=",
+        "hani":         "https://search.hani.co.kr/search?searchword=",
+        "khan":         "https://search.khan.co.kr/?q=",
     }
     japanese_outlets = {
         "tokyo_np": "https://www.tokyo-np.co.jp/search/?q=",
-        "mainichi": "https://mainichi.jp/search/?q=",
+        "mainichi":  "https://mainichi.jp/search/?q=",
+        "akahata":  "https://www.jcp.or.jp/akahata/search/?q=",
+        "sankei":   "https://www.sankei.com/search/?q=",
+        "yomiuri":  "https://www.yomiuri.co.jp/web-search/",  # URL built from template in OUTLET_CONFIG
     }
 
-    # Keywords are defined in the KEYWORDS constant at the top of this file.
-    # Pass a custom dict here only if you want to override them for this run.
-    article_urls = extract_article_urls(korean_outlets, japanese_outlets)
-    print(f"\nFound {len(article_urls)} article URLs\n")
-
-    articles = scrape_articles(article_urls[:3])   # limit to 3 for the demo
-    for art in articles:
+    # Keywords defined in KEYWORDS constant; pass a custom dict to override.
+    results = extract_article_urls(korean_outlets, japanese_outlets)
+    print(f"\nFound {len(results)} results\n")
+    for r in results:
         print("=" * 70)
-        print("URL  :", art["url"])
-        print("TITLE:", art["title"])
-        print("BODY :", art["body"][:300] + ("…" if len(art["body"]) > 300 else ""))
+        print("OUTLET :", r["outlet"])
+        print("KEYWORD:", r["keyword"])
+        print("URL    :", r["url"])
+        print("TITLE  :", r["title"])
