@@ -39,7 +39,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
 # ── Application code ───────────────────────────────────────────────────────────
-COPY kj_scraper.py .
 COPY main.py webscrape.py ./
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
