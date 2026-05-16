@@ -40,7 +40,7 @@ RUN playwright install chromium
 
 # ── Application code ───────────────────────────────────────────────────────────
 COPY kj_scraper.py .
-COPY main.py .
+COPY main.py webscrape.py ./
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
 # Cloud Run Jobs runs the container to completion and exits.
