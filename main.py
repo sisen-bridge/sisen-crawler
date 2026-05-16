@@ -87,12 +87,10 @@ def main() -> None:
                     press_name=art["outlet"],
                     nation=art["nation"],
                     url=art["url"],
-                    ko_text=body if is_korean else None,
-                    ja_text=body if not is_korean else None,
                     ko_title=title if is_korean else None,
                     ja_title=title if not is_korean else None,
-                    neutral_title=None,
-                    summary=None,
+                    ko_text=body if is_korean else None,
+                    ja_text=body if not is_korean else None,
                 )
             if new_id is None:
                 skipped += 1

@@ -79,13 +79,11 @@ _INSERT_ARTICLE_SQL = sqlalchemy.text(
     """
     INSERT INTO article (
         topic_id, press_name, nation, url,
-        ko_text, ja_text, summary,
-        neutral_title, ko_title, ja_title
+        ko_title, ja_title, ko_text, ja_text
     )
     VALUES (
         :topic_id, :press_name, :nation, :url,
-        :ko_text, :ja_text, :summary,
-        :neutral_title, :ko_title, :ja_title
+        :ko_title, :ja_title, :ko_text, :ja_text
     )
     ON CONFLICT (url) DO NOTHING
     RETURNING article_id
@@ -105,12 +103,10 @@ def insert_article(
     press_name: str,
     nation: str,
     url: str,
-    ko_text: str | None,
-    ja_text: str | None,
-    summary: str | None = None,
-    neutral_title: str | None = None,
     ko_title: str | None = None,
     ja_title: str | None = None,
+    ko_text: str | None = None,
+    ja_text: str | None = None,
 ) -> int | None:
     """Insert one article. Returns the new article_id, or None if the URL
     already existed (the ON CONFLICT (url) DO NOTHING clause fired)."""
@@ -121,12 +117,10 @@ def insert_article(
             "press_name": press_name,
             "nation": nation,
             "url": url,
-            "ko_text": ko_text,
-            "ja_text": ja_text,
-            "summary": summary,
-            "neutral_title": neutral_title,
             "ko_title": ko_title,
             "ja_title": ja_title,
+            "ko_text": ko_text,
+            "ja_text": ja_text,
         },
     ).scalar()
 
