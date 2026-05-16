@@ -1,25 +1,25 @@
 """
-news_scraper.py
----------------
+webscrape.py
+------------
 Scrape Korean and Japanese news outlets using their own site-search pages.
 
 Install:
     pip install requests beautifulsoup4 lxml
 
 Quick start:
-    from kj_scraper import extract_article_urls, scrape_articles
+    from webscrape import extract_article_urls, scrape_articles
 
     korean_outlets = {
         "chosun": "https://www.chosun.com/nsearch/?query=",
         "yonhap": "https://www.yna.co.kr/search/index?query=",
     }
     japanese_outlets = {
-        "nhk":   "https://www3.nhk.or.jp/news/search/?q=",
-        "asahi": "https://www.asahi.com/search/?keywords=",
+        "tokyo_np": "https://www.tokyo-np.co.jp/search/?q=",
+        "mainichi": "https://mainichi.jp/search/?q=",
     }
     # keywords default to the KEYWORDS constant defined in this file
-    article_urls = extract_article_urls(korean_outlets, japanese_outlets)
-    articles     = scrape_articles(article_urls)
+    records  = extract_article_urls(korean_outlets, japanese_outlets)
+    articles = scrape_articles(records)
 """
 
 import time
@@ -277,7 +277,7 @@ def extract_article_urls(
     japanese_outlets: dict[str, str],
     keywords: dict[str, str] | None = None,
     delay: float = 1.5,
-) -> list[str]:
+) -> list[dict]:
     """
     For every (outlet, keyword) pair, fetch that outlet's search results page
     and collect the article URLs found on it.
@@ -293,23 +293,39 @@ def extract_article_urls(
 
     Returns
     -------
-    Deduplicated flat list of article URL strings across all outlets and keywords.
+    Deduplicated list of dicts; each carries the URL plus the metadata the DB
+    layer needs to attribute it correctly:
+        url, outlet, nation, ko_keyword, ja_keyword
     """
     if keywords is None:
         keywords = KEYWORDS
     seen: set[str] = set()
-    article_urls: list[str] = []
+    records: list[dict] = []
 
-    # Build two separate (outlet_name, search_base_url, keyword) work lists.
-    tasks: list[tuple[str, str, str]] = []
+    # Build the work list. Each task carries the full (ko, ja) pair so that
+    # whichever language we search with, the resulting URLs can still be
+    # linked back to the same topic row in the DB.
+    tasks: list[dict] = []
     for outlet_name, search_base_url in korean_outlets.items():
-        for korean_kw in keywords.keys():
-            tasks.append((outlet_name, search_base_url, korean_kw))
+        for ko_kw, ja_kw in keywords.items():
+            tasks.append({
+                "outlet": outlet_name, "nation": "Korea",
+                "search_base_url": search_base_url, "search_keyword": ko_kw,
+                "ko_keyword": ko_kw, "ja_keyword": ja_kw,
+            })
     for outlet_name, search_base_url in japanese_outlets.items():
-        for japanese_kw in keywords.values():
-            tasks.append((outlet_name, search_base_url, japanese_kw))
+        for ko_kw, ja_kw in keywords.items():
+            tasks.append({
+                "outlet": outlet_name, "nation": "Japan",
+                "search_base_url": search_base_url, "search_keyword": ja_kw,
+                "ko_keyword": ko_kw, "ja_keyword": ja_kw,
+            })
 
-    for outlet_name, search_base_url, keyword in tasks:
+    for task in tasks:
+        outlet_name = task["outlet"]
+        search_base_url = task["search_base_url"]
+        keyword = task["search_keyword"]
+
         cfg = OUTLET_CONFIG.get(outlet_name, {})
         link_selector: str = cfg.get("link_selector", "")
         link_attr: str     = cfg.get("link_attr", "href")
@@ -346,21 +362,27 @@ def extract_article_urls(
         for url in candidates:
             if url not in seen:
                 seen.add(url)
-                article_urls.append(url)
+                records.append({
+                    "url": url,
+                    "outlet": outlet_name,
+                    "nation": task["nation"],
+                    "ko_keyword": task["ko_keyword"],
+                    "ja_keyword": task["ja_keyword"],
+                })
                 new += 1
 
         log.info("[%s] keyword=%r → +%d URLs (running total: %d)",
-                 outlet_name, keyword, new, len(article_urls))
+                 outlet_name, keyword, new, len(records))
         time.sleep(delay)
 
-    log.info("Collected %d unique article URLs in total.", len(article_urls))
-    return article_urls
+    log.info("Collected %d unique article URLs in total.", len(records))
+    return records
 
 
 # ── Function 2 ────────────────────────────────────────────────────────────────
 
 def scrape_articles(
-    article_urls: list[str],
+    article_records: list[dict],
     delay: float = 1.0,
 ) -> list[dict]:
     """
@@ -368,24 +390,26 @@ def scrape_articles(
 
     Parameters
     ----------
-    article_urls : list of URLs returned by extract_article_urls().
-    delay        : polite pause between requests (seconds).
+    article_records : list of dicts from extract_article_urls(); each must
+                      contain at minimum 'url', 'outlet', 'nation',
+                      'ko_keyword', 'ja_keyword'.
+    delay           : polite pause between requests (seconds).
 
     Returns
     -------
-    List of dicts, each with:
-        "url"   : original article URL (str)
-        "title" : article title        (str, empty string if not found)
-        "body"  : main body text       (str, empty string if extraction failed)
+    The same list of dicts, each augmented with:
+        "title" : article title  (str, empty string if not found)
+        "body"  : main body text (str, empty string if extraction failed)
     """
     results: list[dict] = []
 
-    for url in article_urls:
+    for record in article_records:
+        url = record["url"]
         log.info("Scraping: %s", url)
         soup = _fetch(url)
 
         if soup is None:
-            results.append({"url": url, "title": "", "body": ""})
+            results.append({**record, "title": "", "body": ""})
             time.sleep(delay)
             continue
 
@@ -422,7 +446,7 @@ def scrape_articles(
             ]
             body = "\n\n".join(paragraphs) if paragraphs else content_el.get_text("\n", strip=True)
 
-        results.append({"url": url, "title": title, "body": body})
+        results.append({**record, "title": title, "body": body})
         log.info("  ✓ title=%r | body=%d chars", title[:60], len(body))
         time.sleep(delay)
 
@@ -443,12 +467,14 @@ if __name__ == "__main__":
 
     # Keywords are defined in the KEYWORDS constant at the top of this file.
     # Pass a custom dict here only if you want to override them for this run.
-    article_urls = extract_article_urls(korean_outlets, japanese_outlets)
-    print(f"\nFound {len(article_urls)} article URLs\n")
+    records = extract_article_urls(korean_outlets, japanese_outlets)
+    print(f"\nFound {len(records)} article URLs\n")
 
-    articles = scrape_articles(article_urls[:3])   # limit to 3 for the demo
+    articles = scrape_articles(records[:3])   # limit to 3 for the demo
     for art in articles:
         print("=" * 70)
-        print("URL  :", art["url"])
-        print("TITLE:", art["title"])
-        print("BODY :", art["body"][:300] + ("…" if len(art["body"]) > 300 else ""))
+        print("URL    :", art["url"])
+        print("OUTLET :", art["outlet"], "/", art["nation"])
+        print("TOPIC  :", art["ko_keyword"], "↔", art["ja_keyword"])
+        print("TITLE  :", art["title"])
+        print("BODY   :", art["body"][:300] + ("…" if len(art["body"]) > 300 else ""))

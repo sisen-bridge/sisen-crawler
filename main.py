@@ -1,17 +1,16 @@
 """
 main.py
 -------
-Entrypoint for GCP Cloud Run Jobs.
-Runs the scraper and prints results to stdout (visible in Cloud Logging).
+Entrypoint for the GCP Cloud Run Job.
 
-Adapt the output section at the bottom to write to Cloud Storage,
-BigQuery, Firestore, or wherever you want to store the results.
+Scrapes Korean + Japanese news outlets for each (ko, ja) keyword pair
+defined in webscrape.KEYWORDS, then writes the results into Cloud SQL
+for PostgreSQL (database `sisen_articles_db`, tables `topic` + `article`).
 """
 
-import json
 import logging
-import os
 
+import db
 from webscrape import extract_article_urls, scrape_articles
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -26,39 +25,82 @@ KOREAN_OUTLETS = {
 
 JAPANESE_OUTLETS = {
     "tokyo_np": "https://www.tokyo-np.co.jp/search/?q=",
-    "mainichi":  "https://mainichi.jp/search/?q=",
+    "mainichi": "https://mainichi.jp/search/?q=",
 }
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+def _topic_name(ko: str, ja: str) -> str:
+    return f"{ko} / {ja}"
+
+
+def _combine_title_body(title: str, body: str) -> str:
+    """Schema has no separate title column; prepend the title to the text
+    so it isn't lost. Empty pieces are dropped cleanly."""
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if title and body:
+        return f"{title}\n\n{body}"
+    return title or body
+
+
 def main() -> None:
     log.info("=== News Scraper starting ===")
 
-    # 1. Collect article URLs from all outlets
-    article_urls = extract_article_urls(KOREAN_OUTLETS, JAPANESE_OUTLETS)
-    log.info("Collected %d article URLs", len(article_urls))
+    # 1. Collect article URLs (each record carries outlet/nation/keyword pair).
+    records = extract_article_urls(KOREAN_OUTLETS, JAPANESE_OUTLETS)
+    log.info("Collected %d article URLs", len(records))
 
-    # 2. Scrape title + body from each article
-    articles = scrape_articles(article_urls)
+    # 2. Fetch title + body for each article.
+    articles = scrape_articles(records)
     log.info("Scraped %d articles", len(articles))
 
-    # 3. Output ────────────────────────────────────────────────────────────────
-    # Currently writes newline-delimited JSON to stdout, which Cloud Logging
-    # captures automatically.
-    #
-    # To write to Cloud Storage instead, replace this block with:
-    #
-    #   from google.cloud import storage
-    #   client = storage.Client()
-    #   bucket = client.bucket(os.environ["GCS_BUCKET"])
-    #   blob = bucket.blob("results/articles.json")
-    #   blob.upload_from_string(json.dumps(articles, ensure_ascii=False, indent=2),
-    #                           content_type="application/json")
-    #   log.info("Uploaded to gs://%s/results/articles.json", os.environ["GCS_BUCKET"])
-    #
-    for article in articles:
-        print(json.dumps(article, ensure_ascii=False))
+    if not articles:
+        log.info("Nothing to write. Exiting.")
+        db.close()
+        return
 
+    # 3. Upsert every (ko, ja) keyword pair as a topic, capture its topic_id.
+    pairs = {(a["ko_keyword"], a["ja_keyword"]) for a in articles}
+    topic_ids: dict[tuple[str, str], int] = {}
+    with db.engine.begin() as conn:
+        for ko, ja in pairs:
+            topic_ids[(ko, ja)] = db.upsert_topic(conn, _topic_name(ko, ja))
+    log.info("Resolved %d topics", len(topic_ids))
+
+    # 4. Insert articles one transaction at a time so a single bad row
+    #    doesn't roll back the whole batch.
+    inserted = skipped = failed = 0
+    for art in articles:
+        text = _combine_title_body(art["title"], art["body"])
+        if not text:
+            log.info("Empty body, skipping: %s", art["url"])
+            failed += 1
+            continue
+        try:
+            with db.engine.begin() as conn:
+                new_id = db.insert_article(
+                    conn,
+                    topic_id=topic_ids[(art["ko_keyword"], art["ja_keyword"])],
+                    press_name=art["outlet"],
+                    nation=art["nation"],
+                    url=art["url"],
+                    ko_text=text if art["nation"] == "Korea" else None,
+                    ja_text=text if art["nation"] == "Japan" else None,
+                    summary=None,
+                )
+            if new_id is None:
+                skipped += 1
+            else:
+                inserted += 1
+        except Exception as exc:
+            log.warning("Insert failed for %s — %s", art["url"], exc)
+            failed += 1
+
+    log.info(
+        "Done. inserted=%d skipped(dup)=%d failed=%d",
+        inserted, skipped, failed,
+    )
+    db.close()
     log.info("=== News Scraper done ===")
 
 
