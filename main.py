@@ -12,7 +12,7 @@ import json
 import logging
 import os
 
-from kj_scraper import extract_article_urls, scrape_articles
+from webscrape import extract_article_urls, scrape_articles
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ JAPANESE_OUTLETS = {
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
-    log.info("=== KJ News Scraper starting ===")
+    log.info("=== News Scraper starting ===")
 
     # 1. Collect article URLs from all outlets
     article_urls = extract_article_urls(KOREAN_OUTLETS, JAPANESE_OUTLETS)
@@ -59,7 +59,7 @@ def main() -> None:
     for article in articles:
         print(json.dumps(article, ensure_ascii=False))
 
-    log.info("=== KJ News Scraper done ===")
+    log.info("=== News Scraper done ===")
 
 
 if __name__ == "__main__":
