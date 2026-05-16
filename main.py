@@ -33,14 +33,15 @@ def _topic_name(ko: str, ja: str) -> str:
     return f"{ko} / {ja}"
 
 
-def _combine_title_body(title: str, body: str) -> str:
-    """Schema has no separate title column; prepend the title to the text
-    so it isn't lost. Empty pieces are dropped cleanly."""
-    title = (title or "").strip()
-    body = (body or "").strip()
-    if title and body:
-        return f"{title}\n\n{body}"
-    return title or body
+# article.{ko_title,ja_title,neutral_title} are VARCHAR(512); truncate to be safe.
+_TITLE_MAX = 512
+
+
+def _truncate(s: str | None, n: int = _TITLE_MAX) -> str | None:
+    if not s:
+        return None
+    s = s.strip()
+    return (s[: n - 1] + "…") if len(s) > n else (s or None)
 
 
 def main() -> None:
@@ -71,11 +72,13 @@ def main() -> None:
     #    doesn't roll back the whole batch.
     inserted = skipped = failed = 0
     for art in articles:
-        text = _combine_title_body(art["title"], art["body"])
-        if not text:
-            log.info("Empty body, skipping: %s", art["url"])
+        body = (art["body"] or "").strip()
+        title = _truncate(art["title"])
+        if not body and not title:
+            log.info("Empty article, skipping: %s", art["url"])
             failed += 1
             continue
+        is_korean = art["nation"] == "Korea"
         try:
             with db.engine.begin() as conn:
                 new_id = db.insert_article(
@@ -84,8 +87,11 @@ def main() -> None:
                     press_name=art["outlet"],
                     nation=art["nation"],
                     url=art["url"],
-                    ko_text=text if art["nation"] == "Korea" else None,
-                    ja_text=text if art["nation"] == "Japan" else None,
+                    ko_text=body if is_korean else None,
+                    ja_text=body if not is_korean else None,
+                    ko_title=title if is_korean else None,
+                    ja_title=title if not is_korean else None,
+                    neutral_title=None,
                     summary=None,
                 )
             if new_id is None:
