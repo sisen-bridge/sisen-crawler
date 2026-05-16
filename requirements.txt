@@ -2,3 +2,5 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 lxml==5.2.2
 playwright==1.44.0
+cloud-sql-python-connector[pg8000]==1.10.0
+SQLAlchemy==2.0.30

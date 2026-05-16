@@ -1,6 +1,6 @@
 """
-news_scraper.py
----------------
+webscrape.py
+------------
 Scrape Korean and Japanese news outlets using their own site-search pages.
 
 Install:
@@ -14,12 +14,12 @@ Quick start:
         "yonhap": "https://www.yna.co.kr/search/index?query=",
     }
     japanese_outlets = {
-        "nhk":   "https://www3.nhk.or.jp/news/search/?q=",
-        "asahi": "https://www.asahi.com/search/?keywords=",
+        "tokyo_np": "https://www.tokyo-np.co.jp/search/?q=",
+        "mainichi": "https://mainichi.jp/search/?q=",
     }
     # keywords default to the KEYWORDS constant defined in this file
-    article_urls = extract_article_urls(korean_outlets, japanese_outlets)
-    articles     = scrape_articles(article_urls)
+    records  = extract_article_urls(korean_outlets, japanese_outlets)
+    articles = scrape_articles(records)
 """
 
 import re
@@ -345,16 +345,30 @@ def extract_article_urls(
     seen: set[str] = set()
     article_entries: list[dict] = []
 
-    # Build two separate (outlet_name, search_base_url, keyword) work lists.
-    tasks: list[tuple[str, str, str]] = []
+    # Build the work list. Each task carries the full (ko, ja) pair so that
+    # whichever language we search with, the resulting URLs can still be
+    # linked back to the same topic row in the DB.
+    tasks: list[dict] = []
     for outlet_name, search_base_url in korean_outlets.items():
-        for korean_kw in keywords.keys():
-            tasks.append((outlet_name, search_base_url, korean_kw))
+        for ko_kw, ja_kw in keywords.items():
+            tasks.append({
+                "outlet": outlet_name, "nation": "Korea",
+                "search_base_url": search_base_url, "search_keyword": ko_kw,
+                "ko_keyword": ko_kw, "ja_keyword": ja_kw,
+            })
     for outlet_name, search_base_url in japanese_outlets.items():
-        for japanese_kw in keywords.values():
-            tasks.append((outlet_name, search_base_url, japanese_kw))
+        for ko_kw, ja_kw in keywords.items():
+            tasks.append({
+                "outlet": outlet_name, "nation": "Japan",
+                "search_base_url": search_base_url, "search_keyword": ja_kw,
+                "ko_keyword": ko_kw, "ja_keyword": ja_kw,
+            })
 
-    for outlet_name, search_base_url, keyword in tasks:
+    for task in tasks:
+        outlet_name = task["outlet"]
+        search_base_url = task["search_base_url"]
+        keyword = task["search_keyword"]
+
         cfg = OUTLET_CONFIG.get(outlet_name, {})
         link_selector: str = cfg.get("link_selector", "")
         link_attr: str     = cfg.get("link_attr", "href")
