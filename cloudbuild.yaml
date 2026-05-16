@@ -15,7 +15,7 @@ steps:
       [
         "run",
         "jobs",
-        "update",
+        "deploy",
         "web-scraper-job",
         "--image",
         "gcr.io/${PROJECT_ID}/sisen-crawler:${SHORT_SHA}",
